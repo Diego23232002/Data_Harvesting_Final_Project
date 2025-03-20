@@ -1,0 +1,997 @@
+---
+title: "shiny_harvesting"
+author: "Irantzu Lamarca"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# DATA HARVESTING
+
+## Web Scraping
+
+We will start by performing the web scraping from the ATP Tour webpage in order to obtain data from the ATP raking tennis players. 
+
+```{r}
+# Libraries
+library(scrapex)
+library(rvest)
+library(httr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(xml2)
+library(lubridate)
+```
+
+```{r}
+
+atp_link <- "https://www.atptour.com/es/rankings/singles?rankRange=0-100&region=all&dateWeek=Semana%20Actual&SortField=Ranking&SortAscending=True"
+browseURL(prep_browser(atp_link))
+
+
+# the website does not let you scrape it unless an user-agent is set.
+
+html_atp_website <- httr::GET(atp_link, 
+                          httr::add_headers("User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0
+; Diego Fernandez / dieguitus23@gmail.com")) |>
+  read_html()
+
+
+#just change the user agent that is in the script into the user agent that you have
+```
+
+### Ranking tables
+
+We will try to retrieve the ranking tables first
+
+```{r}
+# let´s try to retrieve the tables: there are only 2 tables and they seem the same, I´ll extract the 1st one.
+# It looks like we can only extract in the tables the players that did not move up or down in the ranking.
+
+all_tables <- html_atp_website |> html_table()
+
+atp_table <- all_tables[[1]]
+atp_table
+
+
+# let´s try another way: Regular expressions: the // looks for every "span" and [@class='lastName'] means: 
+# Select elements that have an attribute class with the value "lastName"
+# xml_text only extracts the text part, the name of the players.
+
+player_name <- xml_find_all(html_atp_website, "//span[@class='lastName']") |> 
+  xml_text()
+player_name
+
+# let´s store it in a table:
+atp_ranking <- tibble(
+  ranking = 1:100,
+  name = player_name)
+atp_ranking
+# Let´s now extract the next 100 players:
+atp_link2 <-"https://www.atptour.com/es/rankings/singles?rankRange=101-200&region=all&dateWeek=Semana+Actual&SortField=Ranking&SortAscending=True"
+
+html_atp_website2 <- httr::GET(atp_link2, 
+                              httr::add_headers("User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0
+; Diego Fernandez / dieguitus23@gmail.com")) |>
+  read_html()
+
+player_name2 <- xml_find_all(html_atp_website2, "//span[@class='lastName']") |> 
+  xml_text()
+player_name2
+
+# let´s store it in a table:
+atp_ranking2 <- tibble(
+  ranking = 101:200,
+  name = player_name2)
+atp_ranking2
+
+# Let´s extract the last 100 players
+atp_link3 <-"https://www.atptour.com/es/rankings/singles?rankRange=201-300&region=all&dateWeek=Semana+Actual&SortField=Ranking&SortAscending=True"
+
+html_atp_website3 <- httr::GET(atp_link3, 
+                               httr::add_headers("User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0
+; Diego Fernandez / dieguitus23@gmail.com")) |>
+  read_html()
+
+player_name3 <- xml_find_all(html_atp_website3, "//span[@class='lastName']") |> 
+  xml_text()
+player_name3
+
+# let´s store it in a table:
+atp_ranking3 <- tibble(
+  ranking = 201:300,
+  name = player_name3)
+atp_ranking3
+
+# Finally, let´s join the 3 tables and keep only the last name (surname)
+
+final_ranking_table <- rbind(atp_ranking, atp_ranking2, atp_ranking3)
+final_ranking_table
+
+final_ranking_table <- final_ranking_table |> 
+  mutate(name = gsub("^\\s+|\\s+$", "", name)) |>   # clean extra spaces
+  mutate(name = sub(".*\\s+", "", name))
+final_ranking_table
+```
+
+### Age, country, height and weight
+
+We will now try to extract the age, country, height and weight
+
+```{r}
+# Example with Sinner: extracting age, country, height and weight from his web. We have run into some problems 
+# because the variables we want to extract are not visible. We suspect selenium is needed to read javascript code.
+
+require(RSelenium)
+
+
+remDr <- rsDriver(port = 4444L, browser = "chrome")
+driver <- remDr$client
+driver$navigate("https://www.atptour.com/es/players/jannik-sinner/s0ag/overview")
+
+Sys.sleep(10)
+
+
+ul_element_left <- driver$findElement(using = "xpath", value = "//ul[contains(@class, 'pd_left')]")
+
+ul_element_right <- driver$findElement(using = "xpath", value = "//ul[contains(@class, 'pd_right')]")
+
+
+
+li_elements_left <- ul_element_left$findElements(using = "xpath", value = ".//li")
+li_elements_right <- ul_element_right$findElements(using = "xpath", value = ".//li")
+
+
+# Get the text of all the elements <li> LEFT
+li_texts <- sapply(li_elements_left, function(x) x$getElementText())
+full_text <- paste(li_texts, collapse = " ")
+full_text
+
+# Get the text of all the elements <li> RIGHT
+
+li_texts_right <- sapply(li_elements_right, function(x) x$getElementText())
+full_text_right <- paste(li_texts_right, collapse = " ")
+
+# Extracting specific values with regular expressions
+country <- str_extract(full_text_right, "\\((.*?)\\)") |>  str_replace_all("[\\(\\)]", "")
+age <- as.numeric(gsub(".*Edad\\s*(\\d+).*", "\\1", full_text))  # Extracts number 23 (Age)
+weight <- as.numeric(gsub(".*Peso\\s*(\\d+).*", "\\1", full_text))  # Extracts number 77 (Weight)
+height <- as.numeric(gsub(".*Estatura\\s*(\\d+).*", "\\1", full_text))  # Extracts number 191 (Height)
+
+# Create a data frame with extracted values
+df <- data.frame(age = age, weight = weight, height = height, country = country)
+df
+
+driver$close()
+remDr$server$stop()
+
+# We were able to scrape the variables we need for the Sinner example,
+# now we just need to replicate that with every player.
+# (doesn´t work because the app is continously blocking us, we will try to find another way of doing it)
+```
+
+### Wins and looses
+
+Let's get the wins and looses 
+
+```{r}
+# Now let's get the wins/looses in 2025
+library(RSelenium)
+remDr <- rsDriver(port = 4444L, browser = "chrome")
+driver <- remDr$client
+driver$navigate("https://www.atptour.com/es/stats/win-loss-index?indexCategory=all&timeCategory=ytd&country=all&sortBy=index&sortDirection=desc")
+
+Sys.sleep(5)
+page_source <- driver$getPageSource()[[1]]
+
+html_content <- read_html(page_source)
+
+rows <- html_content %>%
+  html_nodes("tr")
+
+# Loop through rows and extract each cell’s content
+table_data <- lapply(rows, function(row) {
+  row %>%
+    html_nodes("td") %>%
+    html_text(trim = TRUE)
+})
+
+table_winloss <- do.call(rbind, lapply(table_data, function(x) {
+  if (length(x) == 4) x else c(x, rep("", 4 - length(x)))  
+})) %>% as.data.frame()
+
+
+colnames(table_winloss) <- c("Player", "Index", "Titles", "WinLoss")
+table_winloss
+
+# let´s clean the table:
+table_winloss <- table_winloss |> 
+  # Remove the number prefix from the Player column
+  mutate(Player = gsub("^\\d+", "", Player)) |> 
+  mutate(Player = trimws(Player)) |>  # Clean any extra spaces
+  
+  # Split the WinLoss column into Wins and Losses
+  separate(WinLoss, into = c("Wins", "Losses"), sep = "-", convert = TRUE) 
+
+table_winloss <- table_winloss|> 
+  slice(-1) # remove the first row
+  
+
+driver$close()
+remDr$server$stop()
+```
+
+### Points won with first serve
+
+Let's get the points won with the first serve
+
+```{r}
+# the points won with first serve
+remDr <- rsDriver(port = 4444L, browser = "chrome")
+driver <- remDr$client
+driver$navigate("https://www.atptour.com/es/stats/individual-game-stats?factType=Aces&year=2024&surface=all&country=all&sortBy=percentage&sortDirection=desc")
+
+Sys.sleep(5)
+page_source <- driver$getPageSource()[[1]]
+
+html_content <- read_html(page_source)
+
+rows <- html_content %>%
+  html_nodes("tr")
+
+# Loop through rows and extract each cell’s content
+table_data <- lapply(rows, function(row) {
+  row %>%
+    html_nodes("td") %>%
+    html_text(trim = TRUE)
+})
+
+table_1st_serve <- do.call(rbind, lapply(table_data, function(x) {
+  if (length(x) == 5) x else c(x, rep("", 5 - length(x)))  
+})) %>% as.data.frame()
+
+
+colnames(table_1st_serve) <- c("Player", "1st_serve_win_%", "Points_won", "Total_points", "Matches_played")
+table_1st_serve
+
+
+# Now, let´s clean the table:
+
+table_1st_serve <- table_1st_serve |> 
+  mutate(Player = gsub("^\\d+", "", Player)) |> 
+  slice(-1)
+table_1st_serve
+
+driver$close()
+remDr$server$stop()
+```
+
+### Aces
+
+Let's get the aces
+
+```{r}
+# the aces
+
+remDr <- rsDriver(port = 4444L, browser = "chrome")
+driver <- remDr$client
+driver$navigate("https://www.atptour.com/es/stats/individual-game-stats?factType=Aces&year=2024&surface=all&country=all&sortBy=percentage&sortDirection=desc")
+
+Sys.sleep(5)
+
+page_source <- driver$getPageSource()[[1]]
+
+html_content <- read_html(page_source)
+
+rows <- html_content %>%
+  html_nodes("tr")
+
+# Loop through rows and extract each cell’s content
+table_data <- lapply(rows, function(row) {
+  row %>%
+    html_nodes("td") %>%
+    html_text(trim = TRUE)
+})
+
+table_aces <- do.call(rbind, lapply(table_data, function(x) {
+  if (length(x) == 3) x else c(x, rep("", 3 - length(x)))  
+})) %>% as.data.frame()
+
+
+colnames(table_aces) <- c("Player", "Aces_number", "Matches_played")
+table_aces
+
+
+# Now, let´s clean the table:
+
+table_aces <- table_aces |> 
+  mutate(Player = gsub("^\\d+", "", Player)) |> 
+  slice(-1)
+table_aces
+
+driver$close()
+remDr$server$stop()
+```
+
+### Games won % (serve)
+
+Let's get the percentage of the wins of the player when he has to serve
+
+```{r}
+# games won % (when the player has to serve)
+
+remDr <- rsDriver(port = 4444L, browser = "chrome")
+driver <- remDr$client
+driver$navigate("https://www.atptour.com/es/stats/individual-game-stats?factType=Service-Games-Won&year=2024&surface=all&country=all&sortBy=percentage&sortDirection=desc")
+
+Sys.sleep(5)
+
+page_source <- driver$getPageSource()[[1]]
+
+html_content <- read_html(page_source)
+
+rows <- html_content %>%
+  html_nodes("tr")
+
+# Loop through rows and extract each cell’s content
+table_data <- lapply(rows, function(row) {
+  row %>%
+    html_nodes("td") %>%
+    html_text(trim = TRUE)
+})
+
+table_games_won_serve <- do.call(rbind, lapply(table_data, function(x) {
+  if (length(x) == 5) x else c(x, rep("", 5 - length(x)))  
+})) %>% as.data.frame()
+
+
+colnames(table_games_won_serve) <- c(
+  "Player", "%games_won(serve)", "games_won_serving", 
+  "total_games_serving", "Matches_played")
+table_games_won_serve
+
+
+# Now, let´s clean the table:
+
+table_games_won_serve <- table_games_won_serve |> 
+  mutate(Player = gsub("^\\d+", "", Player)) |> 
+  slice(-1)
+
+driver$close()
+remDr$server$stop()
+```
+
+### Games won % (receive)
+
+Let's get the percentage of the wins of the player when he has to receive the serve
+
+```{r}
+# games won % (when the player has to receive the serve)
+
+remDr <- rsDriver(port = 4444L, browser = "chrome")
+driver <- remDr$client
+driver$navigate("https://www.atptour.com/es/stats/individual-game-stats?factType=Return-Games-Won&year=2024&surface=all&country=all&sortBy=percentage&sortDirection=desc")
+
+Sys.sleep(5)
+
+page_source <- driver$getPageSource()[[1]]
+
+html_content <- read_html(page_source)
+
+rows <- html_content %>%
+  html_nodes("tr")
+
+# Loop through rows and extract each cell’s content
+table_data <- lapply(rows, function(row) {
+  row %>%
+    html_nodes("td") %>%
+    html_text(trim = TRUE)
+})
+
+table_games_won_receiving <- do.call(rbind, lapply(table_data, function(x) {
+  if (length(x) == 5) x else c(x, rep("", 5 - length(x)))  
+})) %>% as.data.frame()
+
+
+colnames(table_games_won_receiving) <- c(
+  "Player", "%games_won(receive)", 
+  "games_won_receiving", "total_games_receiving", "Matches_played")
+table_games_won_receiving
+
+
+# Now, let´s clean the table:
+
+table_games_won_receiving <- table_games_won_receiving |> 
+  mutate(Player = gsub("^\\d+", "", Player)) |> 
+  slice(-1)
+
+driver$close()
+remDr$server$stop()
+```
+
+### % Break points saved
+
+Let's get the percentage of the break points saved
+
+```{r}
+# break points saved % 
+
+remDr <- rsDriver(port = 4444L, browser = "chrome")
+driver <- remDr$client
+driver$navigate("https://www.atptour.com/es/stats/individual-game-stats?factType=Break-Points-Saved&year=2024&surface=all&country=all&sortBy=percentage&sortDirection=desc")
+
+Sys.sleep(5)
+
+page_source <- driver$getPageSource()[[1]]
+
+html_content <- read_html(page_source)
+
+rows <- html_content |> 
+  html_nodes("tr")
+
+# Loop through rows and extract each cell’s content
+table_data <- lapply(rows, function(row) {
+  row %>%
+    html_nodes("td") %>%
+    html_text(trim = TRUE)
+})
+
+table_break_points_saved <- do.call(rbind, lapply(table_data, function(x) {
+  if (length(x) == 5) x else c(x, rep("", 5 - length(x)))  
+})) %>% as.data.frame()
+
+
+colnames(table_break_points_saved) <- c(
+  "Player", "%break_points_saved", 
+  "points_won", "total_points", "Matches_played")
+table_break_points_saved
+
+
+
+
+# Now, let´s clean the table:
+
+table_break_points_saved <- table_break_points_saved |> 
+  mutate(Player = gsub("^\\d+", "", Player)) |> 
+  slice(-1)
+
+driver$close()
+remDr$server$stop()
+```
+
+### Join tables
+
+```{r}
+
+# Finally, let´s join all the tables
+All_player_variables <-table_break_points_saved |> 
+  full_join(table_games_won_receiving, by = "Player") |> 
+  full_join(table_games_won_serve, by = "Player") |> 
+  full_join(table_aces, by = "Player") |> 
+  full_join(table_1st_serve, by = "Player") |> 
+  full_join(table_winloss, by = "Player")
+
+All_player_variables
+
+All_player_variables <- All_player_variables |> 
+  mutate(Player = gsub("^\\s+|\\s+$", "", Player)) |>   # clean extra spaces
+  mutate(Player = sub(".*\\s+", "", Player))
+
+# Let´s join the All_player_variables with the final_ranking_table table.
+
+players_table <- final_ranking_table |> left_join(All_player_variables, by = c("name" = "Player")) 
+players_table
+
+
+```
+
+For the second part of the project we will just need and we will just use the data retrieved from before, so we will save this data in a csv in order to be able to work with it later (even if we are going to add some variables). 
+
+```{r}
+write.csv(players_table, "sss.csv", row.names = FALSE)
+```
+
+### Age + country
+
+Now we will try to get the age and the country of the player from another different website as the previous one was not letting us do it
+
+```{r}
+# Let´s extract the age and country from another website: 
+
+age_country_link <- "https://tennisabstract.com/reports/atpRankings.html" |>
+  read_html()
+
+age_country <- age_country_link |> html_table()
+
+atp_table <- age_country[[1]]
+atp_table
+
+# Let´s clean the table:
+
+atp_table <- atp_table[-1, ]
+atp_table <- atp_table[-1, ]
+atp_table <- atp_table[, 1:4]
+
+colnames(atp_table) <- c("Rank", "Player", "Country", "Birthdate")
+
+# Keep only the first 300 rows
+atp_table <- atp_table |> slice(1:300)
+
+# Calculate age from birthdate
+atp_table <- atp_table |> 
+  mutate(Birthdate = as.Date(Birthdate),
+         Age = floor(interval(Birthdate, today()) / years(1)))
+
+
+# Keep only Rank, Last_Name, and Age
+atp_table <- atp_table |>  select(Rank, name, Age, Country)
+atp_table$Rank <- as.numeric(atp_table$Rank)
+
+# Finally, let´s join the atp_table and the players_table
+players_table <- players_table |> left_join(atp_table, by = c("ranking" = "Rank"))
+
+
+write.csv(players_table, "players_table.csv", row.names = FALSE)
+
+View(players_table)
+
+```
+
+## Shiny app
+
+After retrieving all that information, we decided to create 2 shiny apps in order to visualize the data retrieved and to make it useful
+
+
+```{r}
+# Libraries
+library(tidyr)
+library(shiny)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(stringr)
+library(scales)
+library(tidyverse)
+library(shinythemes)
+library(plotly)
+library(fmsb)
+library(ggplot2)
+```
+
+We will read the dataset that we saved before for the second part of the project
+
+```{r}
+
+df <- read_csv("sss.csv")
+
+# Have a quick look at it 
+head(df)
+
+str(df)
+
+summary(df)
+
+View(df)
+
+```
+
+### Cleaning and transforming data 
+
+- Remove duplicate or irrelevant columns
+- Convert percentages to numeric values
+- Handle missing values 
+- Convert data into correct format
+
+```{r}
+# Rename columns to avoid spacing problems
+colnames(df) <- gsub(" ", "_", colnames(df))
+
+# CConvert percentages to numerical values
+df$`%break_points_saved` <- as.numeric(gsub("%", "", df$`%break_points_saved`)) / 100
+df$`%games_won(receive)` <- as.numeric(gsub("%", "", df$`%games_won(receive)`)) / 100
+
+# Correct columns with commas 
+df$total_games_receiving <- as.numeric(gsub(",", "", df$total_games_receiving))
+
+# View number of NA values per column
+na_counts <- colSums(is.na(df))
+na_counts <- na_counts[na_counts > 0] 
+print(na_counts)
+
+# Display percentage of NA values per column
+na_percentage <- (na_counts / nrow(df)) * 100
+print(na_percentage)
+
+# NA chart to visualize impact
+na_data <- data.frame(Variable = names(na_percentage), Porcentaje = na_percentage)
+ggplot(na_data, aes(x = reorder(Variable, -Porcentaje), y = Porcentaje)) +
+  geom_bar(stat="identity", fill="red") +
+  coord_flip() +
+  ggtitle("Percentage of NA Values per Variable") +
+  xlab("Variable") +
+  ylab("Percentage of NA Values")
+```
+
+
+```{r}
+# Delete “Matches_played” and “Total_points” columns because they have 100% of NA
+df <- df %>% select(-Matches_played, -Total_points)
+
+```
+
+```{r}
+# Merge column data into one column, taking non-NA values
+df$matches_played <- coalesce(df$Matches_played.x, df$Matches_played.y, df$Matches_played.x.x, df$Matches_played.y.y)
+
+# Delete original columns
+df <- df %>% select(-Matches_played.x, -Matches_played.y, -Matches_played.x.x, -Matches_played.y.y)
+
+
+```
+
+```{r}
+# Check for NA again and for the variables names
+na_counts <- colSums(is.na(df))
+na_counts <- na_counts[na_counts > 0] 
+print(na_counts)
+
+na_percentage <- (na_counts / nrow(df)) * 100
+print(na_percentage)
+
+na_data <- data.frame(Variable = names(na_percentage), Porcentaje = na_percentage)
+ggplot(na_data, aes(x = reorder(Variable, -Porcentaje), y = Porcentaje)) +
+  geom_bar(stat="identity", fill="red") +
+  coord_flip() +
+  ggtitle("Percentage of NA Values per Variable") +
+  xlab("Variable") +
+  ylab("Percentage of NA")
+
+```
+
+
+```{r}
+# Rename column "Index"
+df <- df %>% rename(Win_loss_index = Index)
+# Delete unwanted columns
+df <- df %>% select(-Points_won, -total_points, -points_won)
+
+colnames(df)
+```
+
+Now that we have the variables of the dataset as we would like, we can start with the shiny app. We know that we have lots of NA, but doing an imputation doesn't make sense in this case because the results wouldn't be real, so we will just drop_na() and we will work with the players that have all of the data
+
+### Shiny app 1
+
+We are going to create 2 shiny apps. The first one serves as an ATP Player Comparator, allowing users to select a professional tennis player and compare their performance metrics with custom input values. The app provides an interactive analysis of key statistics, including aces, win percentage, service and return games won, titles, and matches played. By selecting a player from a dropdown menu and adjusting these metrics, users can visualize the differences between their chosen values and the real performance data of professional players. The app generates a detailed statistical table, a bar chart for graphical comparison, a numerical table displaying the differences in metrics, and a radar chart for a more intuitive visual representation. The purpose of this tool is to provide players, coaches, and analysts with a practical way to compare their performance to elite players, helping to identify strengths and areas for improvement. By integrating interactive and visually engaging elements, this app enhances the accessibility and interpretability of performance data in tennis.
+
+```{r}
+
+# Converting percentages to numerical values and cleaning data
+players_data <- df %>%
+  mutate(across(contains("%"), ~as.numeric(str_remove(.x, "%"))/100)) %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  drop_na()
+
+# If the data are not a data.frame, force conversion
+if (!inherits(players_data, "data.frame")) {
+  players_data <- as.data.frame(players_data)
+}
+
+# Rename columns to avoid problematic characters
+players_data <- players_data %>%
+  rename(
+    Break_Points_Saved = `%break_points_saved`,
+    Games_Won_Receive = `%games_won(receive)`,
+    Games_Won_Serve = `%games_won(serve)`,
+    First_Serve_Win = `1st_serve_win_%`,
+    Win_Percentage = `Win_loss_index`,
+    Titles = `Titles`,
+    Matches_Played = `matches_played`
+  )
+
+# Define application UI
+ui <- fluidPage(
+  theme = shinytheme("flatly"),
+  titlePanel("ATP Player Comparator"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("player_choice", "Select a player to compare:", choices = unique(players_data$name)),
+      numericInput("aces", "Number of Aces:", value = 50, min = 0, max = 1000),
+      numericInput("win_loss", "Winning percentage:", value = 50, min = 0, max = 100),
+      numericInput("serve_win", "% Games won when Serving:", value = 70, min = 0, max = 100),
+      numericInput("return_win", "% Games won on Receiving:", value = 30, min = 0, max = 100),
+      numericInput("titles", "Titles:", value = 1, min = 0, max = 100),
+      numericInput("matches_played", "Matches played:", value = 50, min = 0, max = 1000),
+      actionButton("compare", "Compare", class = "btn-primary"),
+      actionButton("reset", "Reset values", class = "btn-warning")
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Statistics", tableOutput("player_stats")),
+        tabPanel("Graphical Comparison", plotlyOutput("comparison_plot")),
+        tabPanel("Difference in Metrics", tableOutput("difference_table")),
+        tabPanel("Radar Comparison", plotOutput("radar_chart"))
+      )
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  player_stats <- reactive({
+    req(input$player_choice)
+    selected_player <- players_data %>%
+      filter(name == input$player_choice) %>%
+      select(Aces_number, Win_Percentage, Games_Won_Serve, Games_Won_Receive, Titles, Matches_Played) %>%
+      as.data.frame()
+    return(selected_player)
+  })
+
+  observeEvent(input$reset, {
+    updateNumericInput(session, "aces", value = 50)
+    updateNumericInput(session, "win_loss", value = 50)
+    updateNumericInput(session, "serve_win", value = 70)
+    updateNumericInput(session, "return_win", value = 30)
+    updateNumericInput(session, "titles", value = 1)
+    updateNumericInput(session, "matches_played", value = 50)
+  })
+
+  output$player_stats <- renderTable({
+    player_stats()
+  })
+
+  output$difference_table <- renderTable({
+    req(player_stats())
+    diff_df <- data.frame(
+      Métrica = c("Aces", "% Winning", "% Serving", "% Receiving", "Titles", "Games played"),
+      Usuario = c(input$aces, input$win_loss, input$serve_win, input$return_win, input$titles, input$matches_played),
+      Jugador = as.numeric(player_stats()[1, ]),
+      Diferencia = abs(c(input$aces, input$win_loss, input$serve_win, input$return_win, input$titles, input$matches_played) -
+                         as.numeric(player_stats()[1, ]))
+    )
+    diff_df
+  })
+
+  output$comparison_plot <- renderPlotly({
+    req(player_stats())
+    comparison_df <- data.frame(
+      Métrica = c("Aces", "% Winning", "% Serving", "% Receiving", "Titles", "Games played"),
+      Usuario = c(input$aces, input$win_loss, input$serve_win, input$return_win, input$titles, input$matches_played),
+      Jugador = as.numeric(player_stats()[1, ])
+    )
+    ggplotly(
+      ggplot(comparison_df, aes(x = Métrica)) +
+        geom_bar(aes(y = Usuario, fill = "User"), stat = "identity", position = "dodge", alpha = 0.7) +
+        geom_bar(aes(y = Jugador, fill = "Player"), stat = "identity", position = "dodge", alpha = 0.7) +
+        labs(title = paste("Comparison with", input$player_choice), y = "Value", x = "Metric") +
+        theme_minimal() +
+        scale_fill_manual(values = c("User" = "blue", "Player" = "red"))
+    )
+  })
+
+  output$radar_chart <- renderPlot({
+    req(player_stats())
+    radar_data <- rbind(rep(100, 6), rep(0, 6),
+                        c(input$aces, input$win_loss, input$serve_win, input$return_win, input$titles, input$matches_played),
+                        as.numeric(player_stats()[1, ]))
+    colnames(radar_data) <- c("Aces", "% Winning", "% Serving", "% Receiving", "Titles", "Games played")
+    radar_data <- as.data.frame(radar_data)
+    radarchart(radar_data, axistype = 1, pcol = c("blue", "red"), plwd = 2, plty = 1, title = "Metric comparison")
+  })
+}
+
+shinyApp(ui, server)
+
+```
+
+### Shiny app 2
+
+This second app allows users to simulate tennis matches between two selected players based on statistical data. Users can choose two players and modify parameters such as fatigue level and surface effects, which influence the probability calculations. The app offers two simulation modes: a Monte Carlo simulation that predicts match outcomes over 1,000 iterations and a set-based simulation that determines the winner set by set. The results are displayed in a text summary, a bar plot for match outcomes, and a table if the set simulation is activated. Additionally, the app includes a "Live Odds" feature, visualizing the evolving win probabilities of both players throughout the simulations. By incorporating fatigue effects and surface considerations, this simulator provides a more dynamic and realistic representation of tennis matches, making it a valuable tool for fans, analysts, and players who want to assess potential matchups and performance factors.
+
+```{r}
+# Creating UI
+ui_2 <- fluidPage(
+  theme = shinytheme("flatly"),
+  titlePanel("ATP Match Simulator"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("player1", "Select player 1:", choices = unique(players_data$name)),
+      selectInput("player2", "Select player 2:", choices = unique(players_data$name)),
+      sliderInput("fatigue_factor", "Fatigue Factor (Impact on Performance):", 
+                  min = 0, max = 1, value = 0.5, step = 0.1),
+      checkboxInput("surface_effect", "Consider type of surface", value = FALSE),
+      checkboxInput("simulate_sets", "Simulate match by sets", value = FALSE),
+      actionButton("simulate", "Simulate Match", class = "btn-primary")
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Result", 
+                 h3("Simulation result"),
+                 verbatimTextOutput("match_result"),
+                 tableOutput("match_sets"),
+                 plotOutput("match_plot")
+        ),
+        tabPanel("Live Odds", 
+                 h3("Live Odds"),
+                 plotOutput("match_evolution")
+        )
+      )
+    )
+  )
+)
+
+# Server
+server_2 <- function(input, output) {
+  
+  simulate_match <- eventReactive(input$simulate, {
+    
+    # Extract statistics of selected players
+    p1_stats <- players_data %>% filter(name == input$player1)
+    p2_stats <- players_data %>% filter(name == input$player2)
+    
+    required_columns <- c("Games_Won_Serve", "Games_Won_Receive", "Aces_number", "Win_Percentage", "Matches_Played")
+    
+    if (!all(required_columns %in% colnames(players_data))) {
+      return("Error: Required columns not found in the data.")
+    }
+    
+    # NA management
+    p1_stats[required_columns] <- lapply(p1_stats[required_columns], function(x) ifelse(is.na(x), 0, x))
+    p2_stats[required_columns] <- lapply(p2_stats[required_columns], function(x) ifelse(is.na(x), 0, x))
+    
+    # Fatigue adjustment
+    p1_fatigue <- 1 - input$fatigue_factor
+    p2_fatigue <- 1 - input$fatigue_factor
+    
+    p1_prob <- ((p1_stats$Games_Won_Serve + p1_stats$Games_Won_Receive) / 2) * p1_fatigue
+    p2_prob <- ((p2_stats$Games_Won_Serve + p2_stats$Games_Won_Receive) / 2) * p2_fatigue
+    
+    if (length(p1_prob) == 0 || length(p2_prob) == 0) {
+      return("Error: Probabilities cannot be calculated due to missing values in the statistics.")
+    }
+    
+    if (input$simulate_sets) {
+      # Simulation by sets
+      set_results <- replicate(5, {
+        p1_win <- rbinom(1, 1, p1_prob)
+        p2_win <- 1 - p1_win
+        c(p1_win, p2_win)
+      })
+      
+      p1_sets <- sum(set_results[1, ])
+      p2_sets <- sum(set_results[2, ])
+      
+      return(list(
+        p1_sets = p1_sets,
+        p2_sets = p2_sets,
+        set_results = data.frame(
+          Set = 1:5,
+          Ganador = c(rep(input$player1, p1_sets), rep(input$player2, p2_sets))
+        )
+      ))
+      
+    } else {
+      # Monte Carlo simulation
+      sim_results <- replicate(1000, {
+        p1_score <- rbinom(1, 1, p1_prob)
+        p2_score <- 1 - p1_score
+        c(p1_score, p2_score)
+      })
+      
+      p1_wins <- sum(sim_results[1, ])
+      p2_wins <- sum(sim_results[2, ])
+      
+      return(list(
+        p1_wins = p1_wins,
+        p2_wins = p2_wins,
+        sim_evolution = data.frame(
+          Simulación = 1:1000,
+          Probabilidad = cumsum(sim_results[1, ]) / (1:1000),
+          Jugador = rep(input$player1, 1000)
+        ) %>%
+          bind_rows(data.frame(
+            Simulación = 1:1000,
+            Probabilidad = cumsum(sim_results[2, ]) / (1:1000),
+            Jugador = rep(input$player2, 1000)
+          ))
+      ))
+    }
+  })
+
+  # Show text result
+  output$match_result <- renderPrint({
+    result <- simulate_match()
+    
+    if (is.character(result)) {
+      return(result)
+    }
+    
+    if (input$simulate_sets) {
+      p1_name <- input$player1
+      p2_name <- input$player2
+      paste(
+        sprintf("%s ganó %d sets.", p1_name, result$p1_sets),
+        sprintf("%s ganó %d sets.", p2_name, result$p2_sets),
+        sep = "\n"
+      )
+    } else {
+      p1_name <- input$player1
+      p2_name <- input$player2
+      paste(
+        sprintf("%s won in %d of 1000 simulations (%.2f%%).", p1_name, result$p1_wins, (result$p1_wins / 10)),
+        sprintf("%s won in %d of 1000 simulations (%.2f%%).", p2_name, result$p2_wins, (result$p2_wins / 10)),
+        sep = "\n"
+      )
+    }
+  })
+  
+  # Show sets table if apply
+  output$match_sets <- renderTable({
+    result <- simulate_match()
+    
+    if (is.character(result) || !input$simulate_sets) {
+      return(NULL)
+    }
+    
+    result$set_results
+  })
+  
+  # Bar plot with results
+  output$match_plot <- renderPlot({
+    result <- simulate_match()
+    
+    if (is.character(result)) {
+      return(NULL)
+    }
+    
+    if (input$simulate_sets) {
+      data_plot <- data.frame(
+        Jugador = c(input$player1, input$player2),
+        Sets_Ganados = c(result$p1_sets, result$p2_sets)
+      )
+      
+      ggplot(data_plot, aes(x = Jugador, y = Sets_Ganados, fill = Jugador)) +
+        geom_bar(stat = "identity") +
+        labs(title = "Results by sets", y = "Sets won", x = "Player") +
+        theme_minimal()
+      
+    } else {
+      data_plot <- data.frame(
+        Jugador = c(input$player1, input$player2),
+        Victorias = c(result$p1_wins, result$p2_wins)
+      )
+      
+      ggplot(data_plot, aes(x = Jugador, y = Victorias, fill = Jugador)) +
+        geom_bar(stat = "identity") +
+        labs(title = "Simulation results", y = "Number of victories", x = "Player") +
+        theme_minimal()
+    }
+  })
+  
+  # Live Probability Chart
+  output$match_evolution <- renderPlot({
+    result <- simulate_match()
+    
+    if (is.character(result) || input$simulate_sets) {
+      return(NULL)
+    }
+    
+    ggplot(result$sim_evolution, aes(x = Simulación, y = Probabilidad, color = Jugador)) +
+      geom_line() +
+      labs(title = "Live probabilities", y = "Winning probability", x = "simulation") +
+      theme_minimal()
+  })
+}
+
+shinyApp(ui_2, server_2)
+
+```
+
