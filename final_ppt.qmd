@@ -1,0 +1,260 @@
+---
+title: "🎾 SCRAPING TENNIS WEBSITES"
+subtitle: "Data Harvesting UC3M"
+date: 2025-03-27
+author: "Irantzu Lamarca & Diego Fernández"
+format:
+  revealjs:
+    theme: [simple, custom.scss]
+    transition: fade
+    transition-speed: fast
+    embed-resources: true
+    slide-number: c/t
+    center-title-slide: true
+    toc-depth: 2
+    logo: https://www.rstudio.com/wp-content/uploads/2018/10/RStudio-Logo-Flat.png
+    footer: "UC3M · Data Harvesting · 2025"
+highlight-style: atom-one-dark
+editor: visual
+---
+
+## 🎯 Objectives of the project
+
+-   Gather information from the official ATP website (rankings, player statistics...)
+-   Build a scraper to extract the data (Selenium)
+-   Create a CSV file and perform some analysis with it (Shiny)
+
+------------------------------------------------------------------------
+
+## 📦 Libraries used
+
+```{r, echo=TRUE, eval=TRUE}
+library(scrapex)
+library(rvest)
+library(httr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(xml2)
+library(lubridate)
+library(tidyverse)
+library(RSelenium)
+```
+
+------------------------------------------------------------------------
+
+## 🌐 Scraping the ATP Rankings
+
+-   `atp_link <- "https://www.atptour.com/es/rankings/singles?rankRange=0-100&region=all&dateWeek=Semana%20Actual&SortField=Ranking&SortAscending=True"`
+-   Website blocks scraping unless a user-agent is set
+-   Attempt 1: `atp_tables[[1]]` → ❌ failed
+
+------------------------------------------------------------------------
+
+![](images/foto1.jpeg){width="80%" style="border-radius: 8px;"}
+
+------------------------------------------------------------------------
+
+## ✅ Second attempt
+
+-   Successfully extracted top 300 players
+
+```{r, echo=TRUE, eval=FALSE}
+xml_find_all(atp_website,"//span[@class='lastName']")
+
+#<!-- //span: Find all <span> elements -->
+#<!-- [@class='lastName']: only with the class lastName -->
+```
+
+![](images/foto3.jpeg){width="80%" style="border-radius: 8px;"}
+
+------------------------------------------------------------------------
+
+## 🎯 Scraping aces per player
+
+![](images/foto5.jpeg){width="80%" style="border-radius: 8px;"}
+
+------------------------------------------------------------------------
+
+## 🏓 Aces Table Output
+
+![](images/foto4.jpeg){width="80%" style="border-radius: 8px;"}
+
+------------------------------------------------------------------------
+
+## 🔍 Scraping other variables
+
+-   Same process as aces table
+-   Cleaned and joined by ranking number
+-   Added 2 variables from external website
+
+------------------------------------------------------------------------
+
+## 📊 Other scraped variables
+
+-   Wins and losses
+-   Points won on first serve
+-   \% wins when serving
+-   \% wins when receiving
+-   \% break points saved
+
+------------------------------------------------------------------------
+
+## 🌍 Age + Country
+
+-   Age and country of the player from another website -\> ATP website was not letting us do it
+
+```{r, echo=TRUE, eval=FALSE}
+age_country_link <- "https://tennisabstract.com/reports/atpRankings.html" |>
+  read_html()
+
+age_country <- age_country_link |> html_table()
+
+atp_table <- age_country[[1]]
+atp_table
+
+# Let´s clean the table:
+
+atp_table <- atp_table[-1, ]
+atp_table <- atp_table[-1, ]
+atp_table <- atp_table[, 1:4]
+
+colnames(atp_table) <- c("Rank", "Player", "Country", "Birthdate")
+
+# Keep only the first 300 rows
+atp_table <- atp_table |> slice(1:300)
+
+# Calculate age from birthdate
+atp_table <- atp_table |> 
+  mutate(Birthdate = as.Date(Birthdate),
+         Age = floor(interval(Birthdate, today()) / years(1)))
+
+
+# Keep only Rank, Last_Name, and Age
+atp_table <- atp_table |>  select(Rank, Player, Age, Country)
+atp_table$Rank <- as.numeric(atp_table$Rank)
+```
+
+------------------------------------------------------------------------
+
+## 🧾 Age + Country Table
+
+![](images/foto2.jpeg){width="80%" style="border-radius: 8px;"}
+
+------------------------------------------------------------------------
+
+## 📄 Final Dataset Preview
+
+```{r, echo=FALSE, eval=TRUE}
+library(readr)
+library(knitr)
+library(kableExtra)
+df <- read_csv("sssx2.csv")
+kable(df[1:10, ]) %>%
+  kable_styling(font_size = 12, full_width = FALSE)
+```
+
+------------------------------------------------------------------------
+
+## 🧼 Data Cleaning Steps
+
+-   Remove duplicate/irrelevant columns
+-   Convert % to numeric
+-   Handle missing values
+-   Format consistently
+
+```{r, echo=TRUE, eval=FALSE}
+# Delete “Matches_played” and “Total_points” columns because they have 100% of NA
+df <- df %>% select(-Matches_played, -Total_points)
+
+# Merge column data into one column, taking non-NA values
+df$matches_played <- coalesce(df$Matches_played.x, df$Matches_played.y, df$Matches_played.x.x, df$Matches_played.y.y)
+
+# Delete original columns
+df <- df %>% select(-Matches_played.x, -Matches_played.y, -Matches_played.x.x, -Matches_played.y.y)
+
+# Delete unwanted columns
+df <- df %>% select(-Points_won, -total_points, -points_won)
+
+```
+
+------------------------------------------------------------------------
+
+## 🔍 NA Analysis
+
+```{r}
+na_counts <- colSums(is.na(df))
+na_counts <- na_counts[na_counts > 0] 
+na_percentage <- (na_counts / nrow(df)) * 100
+```
+
+```{r, echo=FALSE, eval=TRUE}
+na_data <- data.frame(Variable = names(na_percentage), Porcentaje = na_percentage)
+ggplot(na_data, aes(x = reorder(Variable, -Porcentaje), y = Porcentaje)) +
+  geom_bar(stat="identity", fill="red") +
+  coord_flip() +
+  ggtitle("% NA per Variable") +
+  xlab("Variable") +
+  ylab("% Missing")
+```
+
+------------------------------------------------------------------------
+
+## 💡 Shiny App 1 – Player Comparator
+
+-   Select a player and compare their performance metrics with with custom inputs
+-   Purpose: provide players, coaches, and analysts with a way to compare their performance to elite players, helping to identify strengths and areas for improvement
+
+------------------------------------------------------------------------
+
+![](images/shiny1.png){width="80%" style="border-radius: 8px;"}
+
+------------------------------------------------------------------------
+
+![](images/shiny6.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/shiny2.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/shiny3.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/shiny4.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/shiny5.png){width="80%"}
+
+------------------------------------------------------------------------
+
+## 🧠 Shiny App 2 – Match Simulator
+
+-   Two simulation modes:
+    -   Monte Carlo simulation (predicts match outcomes over 1,000 iterations)
+    -   Set-based simulation that determines the winner set by set
+-   Valuable tool for fans, analysts, and players who want to assess potential matchups and performance factors
+
+------------------------------------------------------------------------
+
+![](images/app1.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/app2.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/app3.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/app4.png){width="80%"}
+
+------------------------------------------------------------------------
+
+![](images/app5.png){width="80%"}
